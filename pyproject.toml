@@ -17,6 +17,8 @@ tqdm = "^4.64.1"
 matplotlib = "^3.6.1"
 spacy = "^3.4.1"
 spacy-lefff = "^0.5.1"
+pytorch-crf = "^0.7.2"
+gensim = "^4.2.0"
 
 
 [build-system]

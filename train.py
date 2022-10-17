@@ -166,7 +166,6 @@ def train_model():
     plt.plot(history)
     plt.xlabel("epoch")
     plt.ylabel("loss")
-    plt.legend()
     pub.save_fig("loss.png")
     plt.show()
     plt.close()
