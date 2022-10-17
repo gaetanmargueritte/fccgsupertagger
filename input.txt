@@ -1,0 +1,3 @@
+Toutes les femmes ont commandé du thé ou du café.
+Certaines femmes n'ont pas commandé du café.
+Certaines femmes ont commandé du thé.

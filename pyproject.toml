@@ -1,0 +1,24 @@
+[tool.poetry]
+name = "fccgsupertagger"
+version = "0.1.0"
+description = "A French CCG Supertagger, internship realised at the Bekki Laboratory, Ochanomizu University, Tokyo, Japan"
+authors = ["Gaëtan MARGUERITTE"]
+license = "Apache 2.0"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+nltk = "^3.7"
+torch = "^1.12.1"
+TorchCRF = "^1.1.0"
+numpy = "^1.23.4"
+pltpublish = "^1.0.0"
+tqdm = "^4.64.1"
+matplotlib = "^3.6.1"
+spacy = "^3.4.1"
+spacy-lefff = "^0.5.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
