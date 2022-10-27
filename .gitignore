@@ -1,0 +1,29 @@
+# ignore data file (too big)
+data/*
+
+# ignore temporary evaluation files
+evaluation/*
+
+# output files
+outputs/*
+
+# venv
+py3/*
+
+# pycache
+__pycache__/*
+
+# vscode
+.vscode/*
+
+# pickle files 
+*.pickle
+
+# model files
+*.pt
+
+# image files
+*.png
+
+# maltparser model file
+*.mco
