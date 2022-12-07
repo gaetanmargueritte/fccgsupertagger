@@ -39,15 +39,15 @@ def init_correl(
             init_lstm(feature_lstm)
 
             # mimics time distributed dense layer of keras
-            feature_tdd = nn.Linear(
-                in_features=hidden_size * 2, out_features=output_dim
-            )
+            #feature_tdd = nn.Linear(
+            #    in_features=hidden_size * 2, out_features=output_dim
+            #)
 
-            init.xavier_normal_(feature_tdd.weight.data)
-            init.normal_(feature_tdd.bias.data)
+            #init.xavier_normal_(feature_tdd.weight.data)
+            #init.normal_(feature_tdd.bias.data)
 
             lstm.append(feature_lstm)
-            tdd.append(feature_tdd)
+            #tdd.append(feature_tdd)
 
     return lstm, tdd
 
@@ -63,14 +63,14 @@ class Tagger(nn.Module):
         nb_output_class: int,
         dict2id: Dict[str, int],
         vocab_size: int,
-        dropout: float = 0.1,
+        dropout: float = 0.2,
         hidden_size: int = 128,
         max_sequence_length: int = 120,
         max_embedding_dim: int = 200,
         test_split_ratio: float = 0.2,
         batch_size: int = 32,
         max_word_length: int = 30,
-        num_layers: int = 2,
+        num_layers: int = 1,
         use_gpu: bool = True,
     ) -> None:
         super().__init__()
@@ -100,9 +100,9 @@ class Tagger(nn.Module):
             self._words_embed.weight = nn.Parameter(
                 torch.FloatTensor(pre_words_embedding)
             )
-            self._words_embed.weight.requires_grad = (
-                False  # do not re-learn pre_words_embedding
-            )
+            #self._words_embed.weight.requires_grad = (
+            #    False  # do not re-learn pre_words_embedding
+            #)
         else:
             torch.nn.init.xavier_uniform_(self._words_embed.weight)
         # lemma
@@ -127,9 +127,9 @@ class Tagger(nn.Module):
         # stocking each feature dim to prepare lstm input
         self._features_dim = [
             self._max_embedding_dim,
-            self._max_embedding_dim,
+            #self._max_embedding_dim,
             self._postag_embed_size,
-            self._deprel_embed_size,
+            #self._deprel_embed_size,
         ]
         self._correl_lstm, self._correl_tdd = init_correl(
             self._features_dim,
@@ -139,10 +139,10 @@ class Tagger(nn.Module):
             self._nb_output_class,
         )
         ## first bilstm layer after concat of all embeds of a sequence and the output of correl lstms
-        size_correl_output = self._nb_output_class * len(self._correl_lstm)
+        size_correl_output = 2 * self._hidden_size * len(self._correl_lstm)
         self._lstm = nn.LSTM(
-            input_size=max_embedding_dim * 2
-            + self._deprel_embed_size
+            input_size=max_embedding_dim #* 2
+            #+ self._deprel_embed_size
             + self._postag_embed_size
             + size_correl_output,
             hidden_size=self._hidden_size,
@@ -164,6 +164,7 @@ class Tagger(nn.Module):
         self._activation = nn.ReLU()
 
         self._crf = CRF(self._nb_output_class, batch_first=True)
+        
 
     # negative loss likelihood computation
     def nll(
@@ -191,13 +192,14 @@ class Tagger(nn.Module):
             for j in range(i + 1, len(embeds_list)):
                 correl_tensor = torch.cat((embeds_list[i], embeds_list[j]), 2)
                 correl_lstm = self._correl_lstm[correl_ptr].to(self._device)
-                correl_tdd = self._correl_tdd[correl_ptr].to(self._device)
+                #correl_tdd = self._correl_tdd[correl_ptr].to(self._device)
 
                 correl_ptr += 1
 
                 feature_correl, _ = correl_lstm(correl_tensor)
-                feature_correl = self._activation(feature_correl)
-                feature_correl = correl_tdd(feature_correl)
+                feature_correl = self._dropout_layer(feature_correl)
+                #feature_correl = self._activation(feature_correl)
+                #feature_correl = correl_tdd(feature_correl)
                 correlations.append(feature_correl)
 
         return tuple(correlations)
@@ -212,15 +214,16 @@ class Tagger(nn.Module):
         deprel_embeded = self._deprel_embed(deprel)
         # doing correlation of pairs of features
         # order is important, as embed size was used to init correl_lstm
-        embeds_list = [sentence_embeded, lemma_embeded, postag_embeded, deprel_embeded]
+        #embeds_list = [sentence_embeded, lemma_embeded, postag_embeded, deprel_embeded]
+        embeds_list = [sentence_embeded, postag_embeded]
         full_merge = self._merge_feature_correlations(embeds_list, len(sentence))
         features = torch.cat(full_merge, 2)
-        # embeds = self._dropout_layer(embeds)
+        features = self._dropout_layer(features)
         prediction_lstm, _ = self._lstm(features)
         # prediction1 = self._activation(prediction1)
         # prediction1 = self._dropout_layer(prediction1)
 
-        prediction_lstm = self._activation(prediction_lstm)
+        #prediction_lstm = self._activation(prediction_lstm)
 
         emissions = self._hidden2tags(prediction_lstm)
 

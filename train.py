@@ -3,6 +3,7 @@
 # Training results will be logged using classical prints.
 # Created by Gaëtan MARGUERITTE, model inspired by the PhD thesis of Mr. Luyen Le Ngoc.
 
+from audioop import avg
 import pickle
 import atexit
 import argparse
@@ -13,13 +14,13 @@ import random
 import numpy as np
 import torch
 import pltpublish as pub
+from collections import Counter
 from torch.autograd import Variable
 import tqdm
 import matplotlib.pyplot as plt
 from typing import List, Dict
 from model import Tagger
 from utils import (
-    load_dataset,
     load_words_embedding_file,
     build_vocab,
     enhance_vocabulary,
@@ -28,7 +29,7 @@ from utils import (
     get_data_from_dataset,
     PAD_TAG,
 )
-
+from dataHandle import OUTPUTS_FOLDER, load_fccgbank_dataset, load_tlgbank_dataset
 
 def evaluate(
     model: Tagger,
@@ -214,13 +215,16 @@ def train_model():
         return nll.item()
 
     lr = 0.015
-    optimizer = torch.optim.RMSprop(
-        model.parameters(), lr=lr, weight_decay=1e-4, momentum=0.9
+    #optimizer = torch.optim.RMSprop(
+    #    model.parameters(), lr=lr, weight_decay=1e-4, momentum=0.85
+    #)
+    optimizer = torch.optim.Adam(
+        model.parameters(), lr=lr, weight_decay=1e-4
     )
     lr_reduce = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode="max",
-        patience=1,
+        patience=2,
         factor=0.2,
         verbose=True,
         threshold_mode="abs",
@@ -237,6 +241,9 @@ def train_model():
     number_batch_per_epoch = int(np.ceil(len(data_train) / batch_size))
     total_counter = 0
     atexit.register(save_model)
+    early_stopping_ctr: int = 5
+    early_stopping_threshold: float = 0.5
+    early_stopping_previous: float = 0.0
     for i in range(epochs):
         print(f"Epoch {i+1}/{epochs}")
         random.shuffle(data_train)
@@ -261,10 +268,20 @@ def train_model():
         print(f"\t- valid: {accuracy_valid}")
         model.train(True)
         avg_loss = loss / number_batch_per_epoch
+        # simple early stopping
+        if  abs(early_stopping_previous - round(avg_loss, 1)) < early_stopping_threshold:
+            early_stopping_ctr -= 1
+        else:
+            early_stopping_ctr = 5
+            early_stopping_previous = round(avg_loss, 1)
         history.append(avg_loss)
         loss = 0.0
         print(f"Average batch loss during this epoch: \t{avg_loss}")
         lr_reduce.step(round(best_accuracy_valid, 4))
+        if early_stopping_ctr <= 0:
+            print("No loss modification for the last 5 epochs. Early stopping will now end the training.")
+            break
+        
     atexit.unregister(save_model)
     pub.setup()
     plt.figure()
@@ -278,6 +295,7 @@ def train_model():
     print(f"Final test accuracy: {accuracy_test}")
 
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="French CCG supertagger [train].")
     parser.add_argument(
@@ -286,21 +304,21 @@ if __name__ == "__main__":
     parser.add_argument(
         "-ep",
         "--epochs",
-        default=60,
+        default=40,
         type=int,
-        help="Number of training epochs (default: 60)",
+        help="Number of training epochs (default: 40)",
     )
     parser.add_argument(
         "-em",
         "--embed",
-        default="data/frWac_non_lem_no_postag_no_phrase_200_skip_cut100.bin",
+        default="data/frWac_postag_no_phrase_1000_skip_cut100.bin",
         type=str,
-        help="binary word embedding file from word2vec (default: data/frWac_non_lem_no_postag_no_phrase_200_skip_cut100.bin)",
+        help="binary word embedding file from word2vec (default: data/frWac_postag_no_phrase_1000_skip_cut100.bin)",
     )
     parser.add_argument(
         "-d",
         "--dataset",
-        default="data/ccgresult28.txt",
+        default="data/tlgbankRaw.txt",
         type=str,
         help="dataset file of FrenchCCGBank in txt format (default: data/ccgresult28.txt)",
     )
@@ -322,14 +340,14 @@ if __name__ == "__main__":
         "-s", "--seed", default=0, type=int, help="random seed (default: 0)"
     )
     parser.add_argument(
-        "-we",
-        "--word-embedding",
-        default=200,
+        "-ed",
+        "--embed-dim",
+        default=1000,
         type=int,
-        help="word embedding size (default: 200)",
+        help="word embedding size (default: 1000)",
     )
     parser.add_argument(
-        "-b", "--batch-size", default=16, type=int, help="batch size (default: 16)"
+        "-b", "--batch-size", default=32, type=int, help="batch size (default: 32)"
     )
     parser.add_argument(
         "--max-sequence-length",
@@ -339,6 +357,12 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--hidden-size", default=128, type=int, help="Hidden size (default: 128)"
+    )
+    parser.add_argument(
+        "--dropout", default=0.2, type=float, help="Dropout (default: 0.2)"
+    )
+    parser.add_argument(
+        "--num-layers", default=1, type=int,  help="Number of LSTM layers (default: 1)"
     )
 
     parameters = parser.parse_args()
@@ -350,10 +374,12 @@ if __name__ == "__main__":
     vratio: float = parameters.validation_ratio
     tratio: float = parameters.test_ratio
     seed: int = parameters.seed
-    word_embedding_dim: int = parameters.word_embedding
+    word_embedding_dim: int = parameters.embed_dim
     batch_size: int = parameters.batch_size
     max_sequence_length: int = parameters.max_sequence_length
     hidden_size: int = parameters.hidden_size
+    dropout: float = parameters.dropout
+    num_layers: int = parameters.num_layers
 
     # Get device
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -371,7 +397,9 @@ if __name__ == "__main__":
     # vec2vec embedding fetch
     pre_words_embedding = load_words_embedding_file(embedding_file)
     # dataset loading
-    dataset = load_dataset(dataset_file)
+    ## French CCG Bank 
+    #dataset = load_fccgbank_dataset(dataset_file)
+    dataset = load_tlgbank_dataset(dataset_file) 
 
     # vocabs is a list of pairs of dictionary. First element is item2id, second elemnt is id2item.
     # item2id, id2item = vocabs[i]
@@ -385,7 +413,6 @@ if __name__ == "__main__":
     postags2id, id2postags = vocabs[2]
     deprels2id, id2deprels = vocabs[3]
     ccgs2id, id2ccgs = vocabs[4]
-
     # prepare word embedding with vocabulary ids
     word_embeds = np.random.uniform(
         -np.sqrt(0.06), np.sqrt(0.06), (len(words2id), word_embedding_dim)
@@ -399,6 +426,7 @@ if __name__ == "__main__":
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     # shuffling and splitting dataset
+
     dataset_train, dataset_valid, dataset_test = shuffle_and_split(
         dataset, vratio, tratio, seed
     )
@@ -406,15 +434,24 @@ if __name__ == "__main__":
         f"Lengths of training / validation / test datasets in number of sentences: {len(dataset_train)} / {len(dataset_valid)} / {len(dataset_test)}"
     )
 
-    data_train = get_data_from_dataset(
+    data_train, tagset_train = get_data_from_dataset(
         dataset_train, words2id, lemmas2id, postags2id, deprels2id, ccgs2id
     )
-    data_valid = get_data_from_dataset(
+    data_valid, tagset_valid = get_data_from_dataset(
         dataset_valid, words2id, lemmas2id, postags2id, deprels2id, ccgs2id
     )
-    data_test = get_data_from_dataset(
+    data_test, tagset_test = get_data_from_dataset(
         dataset_test, words2id, lemmas2id, postags2id, deprels2id, ccgs2id
     )
+
+    with open(OUTPUTS_FOLDER + "tagset_diff.txt", "w") as f:
+        total = 0
+        for tag in tagset_test:
+            if tag not in tagset_train and tag not in tagset_valid:
+                f.write(f"{tag}\t{tagset_test[tag]}\n")
+                total += tagset_test[tag]
+        f.write(f"Total: {total}\n")
+    print("Wrote tagset differences between train+valid and test in file ", OUTPUTS_FOLDER, "tagset_diff.txt.")
 
     # model initialization
     model = Tagger(
@@ -425,10 +462,14 @@ if __name__ == "__main__":
         len(ccgs2id),
         ccgs2id,
         len(words2id),
+        max_embedding_dim=word_embedding_dim,
         max_sequence_length=max_sequence_length,
         batch_size=batch_size,
         hidden_size=hidden_size,
+        dropout=dropout,
+        num_layers=num_layers
     )
+
     model.to(device)
 
     # training
@@ -460,6 +501,7 @@ if __name__ == "__main__":
         "deprel_embed_size": len(deprels2id),
         "nb_output_class": len(ccgs2id),
         "max_sequence_length": max_sequence_length,
+        "max_embedding_dim": word_embedding_dim,
         "batch_size": batch_size,
         "hidden_size": hidden_size,
         "vocab_size": len(words2id),

@@ -10,57 +10,23 @@ import numpy as np
 ## useful tags added to data
 START_TAG = "<START>"
 END_TAG = "<END>"
-PAD_TAG = "<PAD>"
-UNK_TAG = "<UNK>"
+PAD_TAG = "<pad>"
+UNK_TAG = "<unk>"
 
 # useful type alias
 Dataset = List[List[Tuple[str, str, str, str, str]]]
 
 # loads all words from word2vec into a dictionary of numpy arrays
-# embed file is expected to be text file from Jean-Philippe Fauconnier, who kindly proposed usefeul ressources on his github page
+# embed file is expected to be text file from Jean-Philippe Fauconnier, who proposed usefeul ressources on his github page
 # https://fauconnier.github.io/
 def load_words_embedding_file(embed_file: str) -> Dict[str, np.ndarray]:
     print("Loading embed model (binary file) using Gensim...")
-    model = KeyedVectors.load_word2vec_format(embed_file, binary=True, unicode_errors='strict')
+    model = KeyedVectors.load_word2vec_format(embed_file, binary=True, unicode_errors='strict', encoding='latin1')
     dict = {}
     for key in model.index_to_key:
         dict[key.lower()] = np.copy(model.word_vec(key))
     print("Done!")
     return dict
-
-# loads FrenchCCGBank's data. This is a french ccg corpus created by Le Ngoc Luyen on a .txt format, generated using his code available on github.
-# https://github.com/lengocluyen/FrenchCCGBank
-#### dataset_file content
-## corpus = [
-##           [sentence01:[
-##                       word1: id, word, lemma, upostag, xpostag, head, deprel, deps, ccgtag
-##                       word2: id, word, lemma, upostag, xpostag, head, deprel, deps, ccgtag
-##                       .....]
-##           ]
-##           [sentence02:[
-##                       word1: id, word, lemma, upostag, xpostag, head, deprel, deps, ccgtag
-##                       word2: id, word, lemma, upostag, xpostag, head, deprel, deps, ccgtag
-##                       .....]
-##           ]
-##           ......
-##         ]
-def load_dataset(dataset_file: str) -> Dataset:
-    print("Loading dataset (txt file)...")
-    dataset: Dataset = []
-    # 0:id, 1:words, 2:lemma, 3:postag, 4:deprel, 5:ccgtag, 6:deprel_id
-    with open(dataset_file, "r") as f:
-        sentence = []
-        for line in f:
-            if len(line) > 1:
-                l = line.rstrip().split('\t')
-                # word, lemma, xpostag, deprel, ccgtag
-                word_tuple = (l[1].strip(), l[2].strip(), l[4].strip(), l[6].strip(), l[8].strip())
-                sentence.append(word_tuple)
-            elif len(sentence) > 0: # end of bloc separated by empty line (only \n)
-                dataset.append(sentence)
-                sentence = []
-    print("Done!")
-    return dataset
 
 # sorts by frequency a dictionary
 def sort_dict(dict: Dict) -> Tuple[Dict[str, int], Dict[int, str]]:
@@ -68,7 +34,8 @@ def sort_dict(dict: Dict) -> Tuple[Dict[str, int], Dict[int, str]]:
     sorted_items = sorted(dict.items(), key=lambda x: (-x[1], x[0]))
     item2id = {item[0]: id for id, item in enumerate(sorted_items)}
     id2item = {id: item[0] for id, item in enumerate(sorted_items)}
-    return item2id, id2item   
+    id2freq = {id: item[1] for id, item in enumerate(sorted_items)}
+    return item2id, id2item, id2freq   
 
 # creates item2id and id2item, sorted by frequency
 def map_dictionary(dict: Dict) -> Tuple[Dict[str, int], Dict[int, str]]:
@@ -85,6 +52,32 @@ def map_tags(dict: Dict) -> Tuple[Dict[str, int], Dict[int, str]]:
     dict[PAD_TAG] = -3
     return sort_dict(dict)
 
+def build_vocab_camembert(dataset: List[Tuple[List[str], List[str]]]) -> List[Tuple[Dict[Any, Any]]]:
+    print("Building vocabulary...")
+    postags, tags = [], []
+    for _, p, t in dataset:
+        for pos, tag in zip(p, t):
+            tags.append(tag)
+            postags.append(pos)
+    tags = dict(Counter(tags))
+    postags = dict(Counter(postags))
+    tags2id, id2tags, id2freqtags = map_tags(tags)
+    pos2id, id2pos, id2freqpos = map_tags(postags)
+    return [(tags2id, id2tags, id2freqtags), (pos2id, id2pos, id2freqpos)]
+
+def extract_tag_stat(id2frq: Dict[int,int], test: Any, end_id: int) -> Tuple[Dict[int,int]]:
+    for _, _, sentence_tag in test:
+        for tag in sentence_tag[1:]: #start tag at pos 0
+            if tag == end_id:
+                break
+            elif tag < end_id: #pad_tag > end_id
+                id2frq[tag] -= 1
+    common = {t: f for t, f in id2frq.items() if f >= 100}
+    uncommon = {t: f for t, f in id2frq.items() if f >= 10 and f < 100}
+    rare = {t: f for t, f in id2frq.items() if f >= 1 and f < 10}
+    unseen = {t: f for t, f in id2frq.items() if f == 0}
+    return (common, uncommon, rare, unseen)
+    
 # build vocabulary for each feature (word, lemma, postag, deprel) and ccg outputs from dataset
 def build_vocab(dataset: List[List[Tuple[str, str, str, str, str,]]]) -> List[Tuple[Dict[str, int], Dict[int, str]]]:
     print("Building vocabulary...")
@@ -142,6 +135,7 @@ def shuffle_and_split(dataset: Dataset, vratio: float, tratio: float, seed: int)
 def get_data_from_dataset(dataset: Dataset, words2id: Dict[str, int], lemmas2id: Dict[str, int], postags2id: Dict[str, int], deprels2id: Dict[str, int], ccgs2id: Dict[str, int]) -> List[Dict[str, List[str]]]:
     print("Creating data from dataset...")
     data = []
+    tagset = []
     for sentence in dataset:
         sentence_text = []
         words_id = []
@@ -158,6 +152,7 @@ def get_data_from_dataset(dataset: Dataset, words2id: Dict[str, int], lemmas2id:
             postags_id.append(postags2id[postag])
             deprels_id.append(deprels2id[deprel])
             ccgs_id.append(ccgs2id[ccg])
+            tagset.append(ccg)
         data.append({
             "sentence_text": sentence_text,
             "words_id": words_id,
@@ -167,7 +162,8 @@ def get_data_from_dataset(dataset: Dataset, words2id: Dict[str, int], lemmas2id:
             "ccgs_id": ccgs_id
         })
     print("Done!")
-    return data
+    tagset = dict(Counter(tagset))
+    return data, tagset
 
 # pads a given sequence in parameter until it reaches sequence_length. 
 def pad_sequence(sequence: List[int], sequence_length: int, pad_value: int) -> List[int]:
