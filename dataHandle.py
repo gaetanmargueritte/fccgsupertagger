@@ -223,6 +223,17 @@ def load_fccgbank_dataset(dataset_file: str) -> Dataset:
     return dataset
 
 
+def fetch_data_camembert(
+    input_file: str
+) -> Tensor:
+    print("Utilizing CamemBERTTagger. Applying whitespace tokenization.")
+    sentences = []
+    with open(input_file, "r") as f:
+        lines = f.readlines()
+        for x in lines:
+            sentences.append(x.split())
+    return sentences
+
 def fetch_and_format_data(
     input_file: str, model_data: Dict[str, Dict], max_sequence_length: int
 ) -> Tuple[Tensor]:

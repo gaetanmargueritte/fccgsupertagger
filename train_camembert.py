@@ -37,7 +37,8 @@ def evaluate(
     data: List[Dict[str, List[str]]],
     best_acc: float,
     log_result: bool = False,
-    mute_vae: bool = True
+    mute_vae: bool = True,
+    k: int = 1
 ):
     common, uncommon, rare, unseen = tag_stat
     correct_total = [(0,0), (0,0), (0,0), (0,0)]
@@ -62,11 +63,14 @@ def evaluate(
             tags_batch = pad_sequence([torch.tensor(t, device=device) for t in tags_batch], batch_first=True, padding_value=tags2id[PAD_TAG])
             masks_batch = pad_sequence([torch.tensor(m, device=device) for m in masks_batch], batch_first=True)
             
-            predictions = model(words_batch, masks_batch, mute_vae)
+            predictions = model(words_batch, masks_batch, mute_vae, k=2)
             for i in range(len(masks_batch)):
-                for (m, predicted_tag, true_tag) in zip(masks_batch[i], predictions[i], tags_batch[i]):
+                j = 0
+                for (m, true_tag) in zip(masks_batch[i], tags_batch[i]):
                     m = m.item()
                     true_tag = true_tag.item()
+                    predicted_tag = predictions[:, i, j]
+                    j += 1
                     if not(m) or true_tag == tags2id[PAD_TAG] or true_tag == tags2id[END_TAG] or true_tag == tags2id[START_TAG]:
                         continue
                     tag_type = 3
@@ -76,8 +80,9 @@ def evaluate(
                         tag_type = 1
                     elif true_tag in rare:
                         tag_type = 2
-                    correct, total = correct_total[tag_type]                      
-                    if predicted_tag == true_tag:
+                    correct, total = correct_total[tag_type]
+                    if true_tag in predicted_tag:
+                    #if predicted_tag == true_tag:
                         correct += 1
                     elif log_result:
                         errors[true_tag] = (
@@ -321,7 +326,7 @@ def train_vae():
     plt.show()
     plt.close()
     accuracy_test, best_accuracy_test = evaluate(model, dataset_test, 0.0, mute_vae=False)
-    print(f"Final test mmse: {accuracy_test}")
+    print(f"Final test accuracy: {accuracy_test}")
     
 
         
@@ -352,37 +357,40 @@ if __name__ == "__main__":
     parser.add_argument(
         "-vr",
         "--validation-ratio",
-        default=0.2,
+        default=0.15,
         type=float,
-        help="validation/training ratio for training (default: 0.2)",
+        help="validation/training ratio for training (default: 0.15)",
     )
     parser.add_argument(
         "-tr",
         "--test-ratio",
-        default=0.2,
+        default=0.1,
         type=float,
-        help="test/dataset ratio for training (default: 0.2)",
+        help="test/dataset ratio for training (default: 0.1)",
     )
     parser.add_argument(
-        "-s", "--seed", default=4, type=int, help="random seed (default: 4)"
+        "-s", "--seed", default=4444, type=int, help="random seed (default: 4444)"
     )
     parser.add_argument(
-        "-b", "--batch-size", default=16, type=int, help="batch size (default: 32)"
+        "-b", "--batch-size", default=6, type=int, help="batch size (default: 6)"
     )
     parser.add_argument(
         "--max-sequence-length",
-        default=120,
+        default=200,
         type=int,
-        help="Max sequence length (default: 120)",
+        help="Max sequence length (default: 200)",
     )
     parser.add_argument(
-        "--hidden-size", default=128, type=int, help="Hidden size (default: 128)"
+        "--hidden-size", default=768, type=int, help="Hidden size (default: 768)"
     )
     parser.add_argument(
-        "--dropout", default=0.2, type=float, help="Dropout (default: 0.2)"
+        "--dropout", default=0.4, type=float, help="Dropout (default: 0.4)"
     )
     parser.add_argument(
         "--num-layers", default=1, type=int,  help="Number of LSTM layers (default: 1)"
+    )
+    parser.add_argument(
+        "--latent-dim", default=300, type=int, help="VAE latent dim (default: 300)"
     )
 
     parameters = parser.parse_args()
@@ -399,6 +407,7 @@ if __name__ == "__main__":
     hidden_size: int = parameters.hidden_size
     dropout: float = parameters.dropout
     num_layers: int = parameters.num_layers
+    latent_dim: int = parameters.latent_dim
 
     # Get device
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -427,15 +436,13 @@ if __name__ == "__main__":
     pos2id, id2pos, _ = vocab[1]
 
     # model initialization
-    # max_sequence_length at 150 as we can expect bert tokenization to extend original 120
-    # not error-proof, should use pad sequence
     # we don't use CamemBERT head layer. Following line will mute this warning
     logging.set_verbosity_error()
-    model = CamemBERTTagger(tags2id, pos2id, batch_size=batch_size)
+    model = CamemBERTTagger(tags2id, pos2id, hidden_dim=hidden_size, batch_size=batch_size, dropout=dropout, latent_space=latent_dim)
     model.to(device)
 
     # adapt dataset to RoBERTa architecture 
-    tokenized_dataset = model.tokenize_dataset(dataset, shortmode=False)
+    tokenized_dataset = model.tokenize_dataset(dataset, shortmode=False, max_sequence_length=max_sequence_length)
 
     
     random.seed(seed)
@@ -456,21 +463,20 @@ if __name__ == "__main__":
     end_time = time.time()
     print(f"Training prep done in {end_time - start_time}s")
 
-
-    if model_file == "":
-        model_file = "model.pt"
-        print("Starting model training...")
-        start_time = time.time()
-        lr = 1e-4
-        train_model(lr, mute_vae=True)
-        end_time = time.time()
-        print(f"Training done in {end_time - start_time}s")
-    else:
-        print(f"Found model file {model_file}.")
-        model.load_state_dict(torch.load(model_file))
-        print("Model state dictionary loaded.")
-        accuracy_test, best_accuracy_test = evaluate(model, dataset_test, -1.0, True, mute_vae=True)
     if vae_model_file == "":
+        if model_file == "":
+            model_file = "model.pt"
+            print("Starting model training...")
+            start_time = time.time()
+            lr = 1e-4
+            train_model(lr, mute_vae=True)
+            end_time = time.time()
+            print(f"Training done in {end_time - start_time}s")
+        else:
+            print(f"Found model file {model_file}.")
+            model.load_state_dict(torch.load(model_file))
+            print("Model state dictionary loaded.")
+            accuracy_test, best_accuracy_test = evaluate(model, dataset_test, -1.0, True, mute_vae=True)
         vae_model_file = "vae_model.pt"
         print("Adding and training VAE layer...")
         start_time = time.time()
@@ -483,7 +489,8 @@ if __name__ == "__main__":
         print("Model with trained vae state dictionary loaded.")
     print(f"Final training phrase...")
     start_time = time.time()
-    lr = 1e-7
+    lr = 1e-5
+    model_file = "final_model.pt"
     train_model(lr, mute_vae=False)
     end_time = time.time()
     print(f"Final training done in {end_time - start_time}s")
@@ -494,10 +501,13 @@ if __name__ == "__main__":
     model_data = {
         "tags2id": tags2id,
         "id2tags": id2tags,
+        "pos2id": pos2id,
+        "id2pos": id2pos,
         "nb_output_class": len(tags2id),
         "max_sequence_length": max_sequence_length,
         "batch_size": batch_size,
         "hidden_size": hidden_size,
+        "latent_dim": latent_dim
     }
 
     with open(pickle_file, "wb") as f:

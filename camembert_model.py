@@ -3,7 +3,7 @@ from torch import nn
 from torch import Tensor
 from torch.nn import init
 from typing import Dict, Tuple, List
-from torchcrf import CRF
+from pytorchcrf import CRF
 
 from transformers import CamembertModel, CamembertTokenizerFast
 from model import init_lstm
@@ -107,7 +107,7 @@ class CamemBERTTagger(nn.Module):
         #max_sequence_length: int = 120,
         num_layers: int = 1,
         batch_size: int = 16,
-        latent_space: int = 200,
+        latent_space: int = 400,
         dropout: float = 0.4
         ) -> None:
         super().__init__()
@@ -156,24 +156,20 @@ class CamemBERTTagger(nn.Module):
         #self._activation = nn.functional.softmax()
         self._crf = CRF(self._nb_outputs, batch_first=True)
 
-        self._dropout = nn.Dropout(dropout)
+        self._dropout = lambda x, y: nn.functional.dropout(x, dropout, y, False)
 
         
     def _get_sentence_prediction_emission(
         self, sentence: Tensor, mask: Tensor, mute_vae: bool, dropout: bool
     ) -> Tensor:
-        if dropout:
-            self._camembert.train()
-        else:
-            self._camembert.eval()
         # get features form camembert
         features = self._camembert(sentence, attention_mask=mask).last_hidden_state
         # [batch_size, sentence_length, 768]
         emissions, _ = self._lstm(features)
-        if dropout:
-            emissions = self._dropout(emissions)
+        emissions = self._dropout(emissions, dropout)
         if not mute_vae:
             emissions, _, _, self._vae_hidden_state = self._lstm_vae(emissions, self._vae_hidden_state)
+            emissions = self._dropout(emissions, dropout)
         predictions = self._hidden2tags(emissions)
         return predictions
         
@@ -198,10 +194,10 @@ class CamemBERTTagger(nn.Module):
         return nll
 
     def forward(
-        self, sentence: Tensor, mask: Tensor, mute_vae: bool = True, dropout: bool = False
+        self, sentence: Tensor, mask: Tensor, mute_vae: bool = True, dropout: bool = False, k: int = 1
     ) -> Tuple[List[float], List[int]]:
         emissions = self._get_sentence_prediction_emission(sentence, mask, mute_vae, dropout)
-        paths = self._crf.decode(emissions, mask.bool())
+        paths = self._crf.decode(emissions, mask.bool(), nbest=k, pad_tag=self._dict2id[PAD_TAG])
         return paths
 
 
@@ -249,3 +245,11 @@ class CamemBERTTagger(nn.Module):
 
     def get_vae(self) -> BiLSTMVAE:
         return self._lstm_vae
+
+    def tokenize_inputs(self, inputs: List[List[str]], max_sequence_length: int = 200) -> List[Dict]:
+        tokenized = [self._tokenizer(sentence, is_split_into_words = True) for sentence in inputs]
+        for dict in tokenized:
+            dict["words_id"] = dict.word_ids()
+        if any([len(t.word_ids()) > max_sequence_length for t in tokenized]):
+            print(f"WARNING: Sequence length exceeded {max_sequence_length}.")
+        return tokenized
